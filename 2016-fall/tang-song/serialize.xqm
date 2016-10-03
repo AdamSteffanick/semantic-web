@@ -3,72 +3,147 @@ module namespace serialize = 'http://bioimages.vanderbilt.edu/xqm/serialize';
 import module namespace propvalue = 'http://bioimages.vanderbilt.edu/xqm/propvalue' at 'https://raw.githubusercontent.com/HeardLibrary/semantic-web/master/2016-fall/tang-song/propvalue.xqm'; (: can substitute local directory if you need to mess with it :)
 (:--------------------------------------------------------------------------------------------------:)
 
-declare function serialize:main($id,$serialization)
+declare function serialize:main($id,$serialization,$repoPath,$pcRepoLocation,$singleOrDump)
 {
-  
-(: to run on local files, change the following paths to the location where you put the csv files, comment out the send-request lines, and uncomment the read-file lines :)  
-let $localFilesFolderUnix := "c:/github/semantic-web/2016-fall/tang-song"
-(: let $localFilesFolderPC := "c:\github\semantic-web\2016-fall\tang-song" :)
+(: will use a variation on this if outputting to a file
+let $localFilesFolderPC := "c:\github\semantic-web\2016-fall\tang-song\" :)
 
-let $metadataDoc := file:read-text(concat('file:///',$localFilesFolderUnix,'/metadata.csv'))
-(: let $metadataDoc := http:send-request(<http:request method='get' href='https://raw.githubusercontent.com/HeardLibrary/semantic-web/master/2016-fall/code/metadata.csv'/>)[2] :)
+let $localFilesFolderUnix := 
+  if (fn:substring(file:current-dir(),1,2) = "C:") 
+  then 
+    (: the computer is a PC with a C: drive, subsitute your path here :)
+    "file:///"||$pcRepoLocation||$repoPath
+  else
+    (: its a Mac with the query running from a repo located at the default under the user directory :)
+    file:current-dir() || "/Repositories/"||$repoPath
+
+let $metadataDoc := file:read-text($localFilesFolderUnix || 'metadata.csv')
+(: at some point if files are stable enough, they could be loaded from the GitHub repo like this:
+let $metadataDoc := http:send-request(<http:request method='get' href='https://raw.githubusercontent.com/HeardLibrary/semantic-web/master/2016-fall/code/metadata.csv'/>)[2] :)
 let $xmlMetadata := csv:parse($metadataDoc, map { 'header' : true(),'separator' : "," })
-
-let $columnIndexDoc := file:read-text(concat('file:///',$localFilesFolderUnix,'/column-index.csv'))
-(: let $columnIndexDoc := http:send-request(<http:request method='get' href='https://raw.githubusercontent.com/HeardLibrary/semantic-web/master/2016-fall/code/column-index.csv'/>)[2] :)
+let $constantsDoc := file:read-text(concat($localFilesFolderUnix, 'constants.csv'))
+let $xmlConstants := csv:parse($constantsDoc, map { 'header' : true(),'separator' : "," })
+let $columnIndexDoc := file:read-text(concat($localFilesFolderUnix, 'metadata-column-mappings.csv'))
 let $xmlColumnIndex := csv:parse($columnIndexDoc, map { 'header' : true(),'separator' : "," })
-
-let $namespaceDoc := file:read-text(concat('file:///',$localFilesFolderUnix,'/namespace.csv'))
-(: let $namespaceDoc := http:send-request(<http:request method='get' href='https://raw.githubusercontent.com/HeardLibrary/semantic-web/master/2016-fall/code/namespace.csv'/>)[2] :)
+let $namespaceDoc := file:read-text(concat($localFilesFolderUnix,'namespace.csv'))
 let $xmlNamespace := csv:parse($namespaceDoc, map { 'header' : true(),'separator' : "," })
-
-let $classesDoc := file:read-text(concat('file:///',$localFilesFolderUnix,'/classes.csv'))
-(: let $classesDoc := http:send-request(<http:request method='get' href='https://raw.githubusercontent.com/HeardLibrary/semantic-web/master/2016-fall/code/classes.csv'/>)[2] :)
+let $classesDoc := file:read-text(concat($localFilesFolderUnix,'metadata-classes.csv'))
 let $xmlClasses := csv:parse($classesDoc, map { 'header' : true(),'separator' : "," })
+let $linkedClassesDoc := file:read-text(concat($localFilesFolderUnix,'linked-classes.csv'))
+let $xmlLinkedClasses := csv:parse($linkedClassesDoc, map { 'header' : true(),'separator' : "," })
 
 let $namespaces := $xmlNamespace/csv/record
 let $columnInfo := $xmlColumnIndex/csv/record
 let $classes := $xmlClasses/csv/record
+let $linkedClasses := $xmlLinkedClasses/csv/record
+let $constants := $xmlConstants/csv/record
+let $domainRoot := $constants//domainRoot/text()
 
+let $linkedMetadata :=
+      for $class in $linkedClasses
+      let $classMappingDoc := file:read-text(concat($localFilesFolderUnix,$class/filename/text(),"-column-mappings.csv"))
+      let $xmlClassMapping := csv:parse($classMappingDoc, map { 'header' : true(),'separator' : "," })
+      let $classClassesDoc := file:read-text(concat($localFilesFolderUnix,$class/filename/text(),"-classes.csv"))
+      let $xmlClassClasses := csv:parse($classClassesDoc, map { 'header' : true(),'separator' : "," })
+      let $classMetadataDoc := file:read-text(concat($localFilesFolderUnix,$class/filename/text(),".csv"))
+      let $xmlClassMetadata := csv:parse($classMetadataDoc, map { 'header' : true(),'separator' : "," })
+      return
+        ( 
+        <file>{
+          $class/link_column,
+          $class/link_property,
+          $class/suffix1,
+          $class/link_characters,
+          $class/suffix2,
+          $class/class,
+          <classes>{
+            $xmlClassClasses/csv/record
+          }</classes>,
+          <mapping>{
+            $xmlClassMapping/csv/record
+          }</mapping>,
+          <metadata>{
+            $xmlClassMetadata/csv/record
+          }</metadata>
+       }</file>
+       )
+  
 (: The main function returns a single string formed by concatenating all of the assembled pieces of the document :)
 return (
   concat( 
     (: the namespace abbreviations only needs to be generated once for the entire document :)
     serialize:list-namespaces($namespaces,$serialization),
     string-join( 
-      (: each record in the database must be checked for a match to the requested URI :)
-      for $record in $xmlMetadata/csv/record
-      where $record/iri/text()=concat("http://art.vanderbilt.edu/",$id)
-      let $baseIRI := $record/iri/text()
-      let $modified := $record/modified/text()
-      return 
-        ( 
-          (: Generate unabbreviated URIs and blank node identifiers. This must be done for every record separately since the UUIDs generated for the blank node identifiers must be the same within a record, but differ among records. :)
-          let $IRIs := serialize:construct-iri($baseIRI,$classes)
-          (: generate a description for each class of resource included in the record :)
-          for $modifiedClass in $IRIs
-          return serialize:describe-resource($IRIs,$columnInfo,$record,$modifiedClass,$serialization,$namespaces) 
-          ,
-          (: The document description is done once for each record. :)
-          serialize:describe-document($baseIRI,$modified,$serialization,$namespaces)
-        )
+      if ($singleOrDump = "dump")
+      then
+        (: this case outputs every record in the database :)
+        for $record in $xmlMetadata/csv/record
+        let $baseIRI := $domainRoot||$record/iri_local_name/text()
+        let $modified := $record/modified/text()
+        return serialize:generate-a-record($record,$linkedMetadata,$baseIRI,$domainRoot,$modified,$classes,$columnInfo,$serialization,$namespaces,$constants)
+      else
+        (: for a single record, each record in the database must be checked for a match to the requested URI :)
+        for $record in $xmlMetadata/csv/record
+        where $record/iri_local_name/text()=$id
+        let $baseIRI := $domainRoot||$record/iri_local_name/text()
+        let $modified := $record/modified/text()
+        return serialize:generate-a-record($record,$linkedMetadata,$baseIRI,$domainRoot,$modified,$classes,$columnInfo,$serialization,$namespaces,$constants)      
       ),
-    serialize:close-container($serialization)
+    serialize:close-container($serialization) 
     ) 
   )
 };
 
+declare function serialize:generate-a-record($record,$linkedMetadata,$baseIRI,$domainRoot,$modified,$classes,$columnInfo,$serialization,$namespaces,$constants)
+{
+        
+          (: Generate unabbreviated URIs and blank node identifiers. This must be done for every record separately since the UUIDs generated for the blank node identifiers must be the same within a record, but differ among records. :)
+          
+          let $IRIs := serialize:construct-iri($baseIRI,$classes) 
+          (: generate a description for each class of resource included in the record :)
+          for $modifiedClass in $IRIs
+          return serialize:describe-resource($IRIs,$columnInfo,$record,$modifiedClass,$serialization,$namespaces,"") 
+          ,
+          
+          (: now step through each class that's linked to the root class by many-to-one relationships and generate the resource description for each linked resource in that class :)
+          for $linkedClass in $linkedMetadata
+          return (
+            (: determine the constants for the linked class :)
+            let $linkColumn := $linkedClass/link_column/text()
+            let $linkProperty := $linkedClass/link_property/text()
+            let $suffix1 := $linkedClass/suffix1/text()
+            let $linkCharacters := $linkedClass/link_characters/text()
+            let $suffix2 := $linkedClass/suffix2/text()
+            let $linkedClassType := $linkedClass/class/text()
+            
+            for $linkedClassRecord in $linkedClass/metadata/record
+            where $baseIRI=$domainRoot||$linkedClassRecord/*[local-name()=$linkColumn]/text()
+            (: generate an IRI for the instance of the linked class based on the convention for that class :)
+            let $linkedClassIRI := $baseIRI||"#"||$linkedClassRecord/*[local-name()=$suffix1]/text()||$linkCharacters||$linkedClassRecord/*[local-name()=$suffix2]/text()
+            let $linkedIRIs := serialize:construct-iri($linkedClassIRI,$linkedClass/classes/record)
+            let $extraTriple := propvalue:iri($linkProperty,$baseIRI,$serialization,$namespaces)
+            for $linkedModifiedClass in $linkedIRIs
+            return
+               serialize:describe-resource($linkedIRIs,$linkedClass/mapping/record,$linkedClassRecord,$linkedModifiedClass,$serialization,$namespaces,$extraTriple) 
+          )
+          ,
+          
+          (: The document description is done once for each record. :)
+          serialize:describe-document($baseIRI,$modified,$serialization,$namespaces,$constants)
+        
+};
+
 (:--------------------------------------------------------------------------------------------------:)
 
-declare function serialize:describe-document($baseIRI,$modified,$serialization,$namespaces)
+declare function serialize:describe-document($baseIRI,$modified,$serialization,$namespaces,$constants)
 {
-  let $type := "http://xmlns.com/foaf/0.1/Document"
+  let $type := $constants//documentClass/text()
   let $suffix := propvalue:extension($serialization)
   let $iri := concat($baseIRI,$suffix)
   return concat(
     propvalue:subject($iri,$serialization),
     propvalue:plain-literal("dc:format",propvalue:media-type($serialization),$serialization),
-    propvalue:plain-literal("dc:creator","Vanderbilt History of Art Department",$serialization),
+    propvalue:plain-literal("dc:creator",$constants//creator/text(),$serialization),
     propvalue:iri("dcterms:references",$baseIRI,$serialization,$namespaces),
     if ($modified)
     then propvalue:datatyped-literal("dcterms:modified",$modified,"http://www.w3.org/2001/XMLSchema#dateTime",$serialization,$namespaces)
@@ -91,8 +166,10 @@ declare function serialize:list-namespaces($namespaces,$serialization)
 {  
 (: Because this is the beginning of the file, it also opens the root container for the serialization (if any) :)
 switch ($serialization)
-    case "turtle" return string-join(serialize:curie-value-pairs($namespaces,$serialization))
-
+    case "turtle" return concat(
+                          string-join(serialize:curie-value-pairs($namespaces,$serialization)),
+                          "&#10;"
+                        )
     case "xml" return concat(
                           "<rdf:RDF&#10;",
                           string-join(serialize:curie-value-pairs($namespaces,$serialization)),
@@ -124,7 +201,7 @@ declare function serialize:curie-value-pairs($namespaces,$serialization)
 (:--------------------------------------------------------------------------------------------------:)
 
 (: This function describes a single instance of the type of resource being described by the table :)
-declare function serialize:describe-resource($IRIs,$columnInfo,$record,$class,$serialization,$namespaces)
+declare function serialize:describe-resource($IRIs,$columnInfo,$record,$class,$serialization,$namespaces,$extraTriple)
 {  
 (: Note: the propvalue:subject function sets up any string necessary to open the container, and the propvalue:type function closes the container :)
   let $type := $class/class/text()
@@ -133,6 +210,12 @@ declare function serialize:describe-resource($IRIs,$columnInfo,$record,$class,$s
   return concat(
     propvalue:subject($iri,$serialization),
     string-join(serialize:property-value-pairs($IRIs,$columnInfo,$record,$type,$serialization,$namespaces)),
+
+(: make the backlink only for the instance of the primary class in a table :)
+    if (not($suffix))
+    then $extraTriple
+    else ""
+    ,
     propvalue:type($type,$serialization,$namespaces)
   )
   ,
