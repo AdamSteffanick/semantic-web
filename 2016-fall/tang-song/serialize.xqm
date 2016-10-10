@@ -3,7 +3,7 @@ module namespace serialize = 'http://bioimages.vanderbilt.edu/xqm/serialize';
 import module namespace propvalue = 'http://bioimages.vanderbilt.edu/xqm/propvalue' at 'https://raw.githubusercontent.com/HeardLibrary/semantic-web/master/2016-fall/tang-song/propvalue.xqm'; (: can substitute local directory if you need to mess with it :)
 (:--------------------------------------------------------------------------------------------------:)
 
-declare function serialize:main($id,$serialization,$repoPath,$pcRepoLocation,$singleOrDump)
+declare function serialize:main($id,$serialization,$repoPath,$pcRepoLocation,$singleOrDump,$outputToFile)
 {
 (: will use a variation on this if outputting to a file
 let $localFilesFolderPC := "c:\github\semantic-web\2016-fall\tang-song\" :)
@@ -38,6 +38,7 @@ let $classes := $xmlClasses/csv/record
 let $linkedClasses := $xmlLinkedClasses/csv/record
 let $constants := $xmlConstants/csv/record
 let $domainRoot := $constants//domainRoot/text()
+let $outputDirectory := $constants//outputDirectory/text()
 
 let $linkedMetadata :=
       for $class in $linkedClasses
@@ -69,29 +70,44 @@ let $linkedMetadata :=
        )
   
 (: The main function returns a single string formed by concatenating all of the assembled pieces of the document :)
-return (
-  concat( 
-    (: the namespace abbreviations only needs to be generated once for the entire document :)
-    serialize:list-namespaces($namespaces,$serialization),
-    string-join( 
-      if ($singleOrDump = "dump")
-      then
-        (: this case outputs every record in the database :)
-        for $record in $xmlMetadata/csv/record
-        let $baseIRI := $domainRoot||$record/iri_local_name/text()
-        let $modified := $record/modified/text()
-        return serialize:generate-a-record($record,$linkedMetadata,$baseIRI,$domainRoot,$modified,$classes,$columnInfo,$serialization,$namespaces,$constants)
-      else
-        (: for a single record, each record in the database must be checked for a match to the requested URI :)
-        for $record in $xmlMetadata/csv/record
-        where $record/iri_local_name/text()=$id
-        let $baseIRI := $domainRoot||$record/iri_local_name/text()
-        let $modified := $record/modified/text()
-        return serialize:generate-a-record($record,$linkedMetadata,$baseIRI,$domainRoot,$modified,$classes,$columnInfo,$serialization,$namespaces,$constants)      
-      ),
-    serialize:close-container($serialization) 
-    ) 
-  )
+return 
+  if ($outputToFile="true")
+  then
+    (: Creates the output directory specified in the constants.csv file if it doesn't already exist.  Then writes into a file having the name passed via the $id parameter concatenated with an appropriate file extension. uses default UTF-8 encoding :)
+    (file:create-dir($outputDirectory), file:write-text($outputDirectory||$id||propvalue:extension($serialization),
+      serialize:generate-entire-document($id,$linkedMetadata,$xmlMetadata,$domainRoot,$classes,$columnInfo,$serialization,$namespaces,$constants,$singleOrDump)
+                                                  ),
+    (: put this in the Result window so that the user can tell that something happened :)
+    "Completed file write of "||$id||propvalue:extension($serialization)||" at "||fn:current-dateTime()
+    )
+  else
+    (: simply output the string to the Result window :)
+    serialize:generate-entire-document($id,$linkedMetadata,$xmlMetadata,$domainRoot,$classes,$columnInfo,$serialization,$namespaces,$constants,$singleOrDump)
+};
+
+declare function serialize:generate-entire-document($id,$linkedMetadata,$xmlMetadata,$domainRoot,$classes,$columnInfo,$serialization,$namespaces,$constants,$singleOrDump)
+{
+concat( 
+  (: the namespace abbreviations only needs to be generated once for the entire document :)
+  serialize:list-namespaces($namespaces,$serialization),
+  string-join( 
+    if ($singleOrDump = "dump")
+    then
+      (: this case outputs every record in the database :)
+      for $record in $xmlMetadata/csv/record
+      let $baseIRI := $domainRoot||$record/iri_local_name/text()
+      let $modified := $record/modified/text()
+      return serialize:generate-a-record($record,$linkedMetadata,$baseIRI,$domainRoot,$modified,$classes,$columnInfo,$serialization,$namespaces,$constants)
+    else
+      (: for a single record, each record in the database must be checked for a match to the requested URI :)
+      for $record in $xmlMetadata/csv/record
+      where $record/iri_local_name/text()=$id
+      let $baseIRI := $domainRoot||$record/iri_local_name/text()
+      let $modified := $record/modified/text()
+      return serialize:generate-a-record($record,$linkedMetadata,$baseIRI,$domainRoot,$modified,$classes,$columnInfo,$serialization,$namespaces,$constants)      
+    ),
+  serialize:close-container($serialization) 
+  ) 
 };
 
 declare function serialize:generate-a-record($record,$linkedMetadata,$baseIRI,$domainRoot,$modified,$classes,$columnInfo,$serialization,$namespaces,$constants)
@@ -249,7 +265,15 @@ declare function serialize:property-value-pairs($IRIs,$columnInfo,$record,$type,
      case "plain" return propvalue:plain-literal($columnType/predicate/text(),$column//text(),$serialization)
      case "datatype" return propvalue:datatyped-literal($columnType/predicate/text(),$column//text(),$columnType/attribute/text(),$serialization,$namespaces)
      case "language" return propvalue:language-tagged-literal($columnType/predicate/text(),$column//text(),$columnType/attribute/text(),$serialization)
-     case "iri" return propvalue:iri($columnType/predicate/text(),$column//text(),$serialization,$namespaces)
+     case "iri" return 
+       (:: check whether the value column in the mapping table has anything in it :)
+       if ($columnType/value/text())
+       then
+         (: something is there. Construct the IRI by concatenating what's in the value column, the column content, and what's in the attribute column :)
+         propvalue:iri($columnType/predicate/text(),$columnType/value/text()||$column//text()||$columnType/attribute/text(),$serialization,$namespaces)
+       else
+         (: nothing is there.  The column either contains a full IRI or an abbreviated one :)
+         propvalue:iri($columnType/predicate/text(),$column//text(),$serialization,$namespaces)
      default return ""
 ,
 
