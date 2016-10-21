@@ -1,12 +1,26 @@
 xquery version "3.1";
 module namespace serialize = 'http://bioimages.vanderbilt.edu/xqm/serialize';
 import module namespace propvalue = 'http://bioimages.vanderbilt.edu/xqm/propvalue' at 'https://raw.githubusercontent.com/HeardLibrary/semantic-web/master/2016-fall/tang-song/propvalue.xqm'; (: can substitute local directory if you need to mess with it :)
+
+(: These two functions copied from FunctX http://www.xqueryfunctions.com/ :)
+
+declare function serialize:substring-after-last
+  ( $arg as xs:string? ,
+    $delim as xs:string )  as xs:string {
+
+   replace ($arg,concat('^.*',serialize:escape-for-regex($delim)),'')
+ } ;
+ 
+ declare function serialize:escape-for-regex
+  ( $arg as xs:string? )  as xs:string {
+
+   replace($arg,
+           '(\.|\[|\]|\\|\||\-|\^|\$|\?|\*|\+|\{|\}|\(|\))','\\$1')
+ } ;
 (:--------------------------------------------------------------------------------------------------:)
 
 declare function serialize:main($id,$serialization,$repoPath,$pcRepoLocation,$singleOrDump,$outputToFile)
 {
-(: will use a variation on this if outputting to a file
-let $localFilesFolderPC := "c:\github\semantic-web\2016-fall\tang-song\" :)
 
 let $localFilesFolderUnix := 
   if (fn:substring(file:current-dir(),1,2) = "C:") 
@@ -17,37 +31,51 @@ let $localFilesFolderUnix :=
     (: its a Mac with the query running from a repo located at the default under the user directory :)
     file:current-dir() || "/Repositories/"||$repoPath
 
-let $metadataDoc := file:read-text($localFilesFolderUnix || 'metadata.csv')
 (: at some point if files are stable enough, they could be loaded from the GitHub repo like this:
 let $metadataDoc := http:send-request(<http:request method='get' href='https://raw.githubusercontent.com/HeardLibrary/semantic-web/master/2016-fall/code/metadata.csv'/>)[2] :)
-let $xmlMetadata := csv:parse($metadataDoc, map { 'header' : true(),'separator' : "," })
 let $constantsDoc := file:read-text(concat($localFilesFolderUnix, 'constants.csv'))
 let $xmlConstants := csv:parse($constantsDoc, map { 'header' : true(),'separator' : "," })
-let $columnIndexDoc := file:read-text(concat($localFilesFolderUnix, 'metadata-column-mappings.csv'))
+let $constants := $xmlConstants/csv/record
+
+let $domainRoot := $constants//domainRoot/text()
+let $coreDoc := $constants//coreClassFile/text()
+let $coreClassPrefix := substring-before($coreDoc,".")
+let $outputDirectory := $constants//outputDirectory/text()
+let $metadataSeparator := $constants//separator/text()
+let $baseIriColumn := $constants//baseIriColumn/text()
+let $modifiedColumn := $constants//modifiedColumn/text()
+let $outFileNameAfter := $constants//outFileNameAfter/text()
+
+let $columnIndexDoc := file:read-text($localFilesFolderUnix||$coreClassPrefix||'-column-mappings.csv')
 let $xmlColumnIndex := csv:parse($columnIndexDoc, map { 'header' : true(),'separator' : "," })
+let $columnInfo := $xmlColumnIndex/csv/record
+
 let $namespaceDoc := file:read-text(concat($localFilesFolderUnix,'namespace.csv'))
 let $xmlNamespace := csv:parse($namespaceDoc, map { 'header' : true(),'separator' : "," })
-let $classesDoc := file:read-text(concat($localFilesFolderUnix,'metadata-classes.csv'))
+let $namespaces := $xmlNamespace/csv/record
+
+let $classesDoc := file:read-text($localFilesFolderUnix||$coreClassPrefix||'-classes.csv')
 let $xmlClasses := csv:parse($classesDoc, map { 'header' : true(),'separator' : "," })
+let $classes := $xmlClasses/csv/record
+
 let $linkedClassesDoc := file:read-text(concat($localFilesFolderUnix,'linked-classes.csv'))
 let $xmlLinkedClasses := csv:parse($linkedClassesDoc, map { 'header' : true(),'separator' : "," })
-
-let $namespaces := $xmlNamespace/csv/record
-let $columnInfo := $xmlColumnIndex/csv/record
-let $classes := $xmlClasses/csv/record
 let $linkedClasses := $xmlLinkedClasses/csv/record
-let $constants := $xmlConstants/csv/record
-let $domainRoot := $constants//domainRoot/text()
-let $outputDirectory := $constants//outputDirectory/text()
+
+let $metadataDoc := file:read-text($localFilesFolderUnix ||$coreDoc)
+let $xmlMetadata := csv:parse($metadataDoc, map { 'header' : true(),'separator' : $metadataSeparator })
 
 let $linkedMetadata :=
       for $class in $linkedClasses
-      let $classMappingDoc := file:read-text(concat($localFilesFolderUnix,$class/filename/text(),"-column-mappings.csv"))
+      let $linkedDoc := $class/filename/text()
+      let $linkedClassPrefix := substring-before($linkedDoc,".")
+
+      let $classMappingDoc := file:read-text(concat($localFilesFolderUnix,$linkedClassPrefix,"-column-mappings.csv"))
       let $xmlClassMapping := csv:parse($classMappingDoc, map { 'header' : true(),'separator' : "," })
-      let $classClassesDoc := file:read-text(concat($localFilesFolderUnix,$class/filename/text(),"-classes.csv"))
+      let $classClassesDoc := file:read-text(concat($localFilesFolderUnix,$linkedClassPrefix,"-classes.csv"))
       let $xmlClassClasses := csv:parse($classClassesDoc, map { 'header' : true(),'separator' : "," })
-      let $classMetadataDoc := file:read-text(concat($localFilesFolderUnix,$class/filename/text(),".csv"))
-      let $xmlClassMetadata := csv:parse($classMetadataDoc, map { 'header' : true(),'separator' : "," })
+      let $classMetadataDoc := file:read-text(concat($localFilesFolderUnix,$linkedDoc))
+      let $xmlClassMetadata := csv:parse($classMetadataDoc, map { 'header' : true(),'separator' : $metadataSeparator })
       return
         ( 
         <file>{
@@ -74,18 +102,23 @@ return
   if ($outputToFile="true")
   then
     (: Creates the output directory specified in the constants.csv file if it doesn't already exist.  Then writes into a file having the name passed via the $id parameter concatenated with an appropriate file extension. uses default UTF-8 encoding :)
-    (file:create-dir($outputDirectory), file:write-text($outputDirectory||$id||propvalue:extension($serialization),
-      serialize:generate-entire-document($id,$linkedMetadata,$xmlMetadata,$domainRoot,$classes,$columnInfo,$serialization,$namespaces,$constants,$singleOrDump)
-                                                  ),
+    (file:create-dir($outputDirectory),
+    
+    (: If the $id is a full IRI or long string, use only the part after the delimiter in $outFileNameAfter as the file name.  Otherwise, use the entire value of $id as the file name:) 
+    if ($outFileNameAfter) 
+    then file:write-text($outputDirectory||serialize:substring-after-last($id, $outFileNameAfter)||propvalue:extension($serialization),serialize:generate-entire-document($id,$linkedMetadata,$xmlMetadata,$domainRoot,$classes,$columnInfo,$serialization,$namespaces,$constants,$singleOrDump,$baseIriColumn,$modifiedColumn))
+    else file:write-text($outputDirectory||$id||propvalue:extension($serialization),serialize:generate-entire-document($id,$linkedMetadata,$xmlMetadata,$domainRoot,$classes,$columnInfo,$serialization,$namespaces,$constants,$singleOrDump,$baseIriColumn,$modifiedColumn))
+    ,
+    
     (: put this in the Result window so that the user can tell that something happened :)
     "Completed file write of "||$id||propvalue:extension($serialization)||" at "||fn:current-dateTime()
     )
   else
     (: simply output the string to the Result window :)
-    serialize:generate-entire-document($id,$linkedMetadata,$xmlMetadata,$domainRoot,$classes,$columnInfo,$serialization,$namespaces,$constants,$singleOrDump)
+    serialize:generate-entire-document($id,$linkedMetadata,$xmlMetadata,$domainRoot,$classes,$columnInfo,$serialization,$namespaces,$constants,$singleOrDump,$baseIriColumn,$modifiedColumn)
 };
 
-declare function serialize:generate-entire-document($id,$linkedMetadata,$xmlMetadata,$domainRoot,$classes,$columnInfo,$serialization,$namespaces,$constants,$singleOrDump)
+declare function serialize:generate-entire-document($id,$linkedMetadata,$xmlMetadata,$domainRoot,$classes,$columnInfo,$serialization,$namespaces,$constants,$singleOrDump,$baseIriColumn,$modifiedColumn)
 {
 concat( 
   (: the namespace abbreviations only needs to be generated once for the entire document :)
@@ -95,15 +128,15 @@ concat(
     then
       (: this case outputs every record in the database :)
       for $record in $xmlMetadata/csv/record
-      let $baseIRI := $domainRoot||$record/iri_local_name/text()
-      let $modified := $record/modified/text()
+      let $baseIRI := $domainRoot||$record/*[local-name()=$baseIriColumn]/text()
+      let $modified := $record/*[local-name()=$modifiedColumn]/text()
       return serialize:generate-a-record($record,$linkedMetadata,$baseIRI,$domainRoot,$modified,$classes,$columnInfo,$serialization,$namespaces,$constants)
     else
       (: for a single record, each record in the database must be checked for a match to the requested URI :)
       for $record in $xmlMetadata/csv/record
-      where $record/iri_local_name/text()=$id
-      let $baseIRI := $domainRoot||$record/iri_local_name/text()
-      let $modified := $record/modified/text()
+      where $record/*[local-name()=$baseIriColumn]/text()=$id
+      let $baseIRI := $domainRoot||$record/*[local-name()=$baseIriColumn]/text()
+      let $modified := $record/*[local-name()=$modifiedColumn]/text()
       return serialize:generate-a-record($record,$linkedMetadata,$baseIRI,$domainRoot,$modified,$classes,$columnInfo,$serialization,$namespaces,$constants)      
     ),
   serialize:close-container($serialization) 
@@ -134,8 +167,14 @@ declare function serialize:generate-a-record($record,$linkedMetadata,$baseIRI,$d
             
             for $linkedClassRecord in $linkedClass/metadata/record
             where $baseIRI=$domainRoot||$linkedClassRecord/*[local-name()=$linkColumn]/text()
-            (: generate an IRI for the instance of the linked class based on the convention for that class :)
-            let $linkedClassIRI := $baseIRI||"#"||$linkedClassRecord/*[local-name()=$suffix1]/text()||$linkCharacters||$linkedClassRecord/*[local-name()=$suffix2]/text()
+            
+            (: generate an IRI or bnode for the instance of the linked class based on the convention for that class :)
+            let $linkedClassIRI := 
+                if (fn:substring($suffix1,1,2)="_:")
+                then 
+                    concat("_:",random:uuid() )
+                else
+                    $baseIRI||"#"||$linkedClassRecord/*[local-name()=$suffix1]/text()||$linkCharacters||$linkedClassRecord/*[local-name()=$suffix2]/text()
             let $linkedIRIs := serialize:construct-iri($linkedClassIRI,$linkedClass/classes/record)
             let $extraTriple := propvalue:iri($linkProperty,$baseIRI,$serialization,$namespaces)
             for $linkedModifiedClass in $linkedIRIs
@@ -221,14 +260,14 @@ declare function serialize:describe-resource($IRIs,$columnInfo,$record,$class,$s
 {  
 (: Note: the propvalue:subject function sets up any string necessary to open the container, and the propvalue:type function closes the container :)
   let $type := $class/class/text()
-  let $suffix := $class/id/text()
+  let $id := $class/id/text()
   let $iri := $class/fullId/text()
   return concat(
     propvalue:subject($iri,$serialization),
-    string-join(serialize:property-value-pairs($IRIs,$columnInfo,$record,$type,$serialization,$namespaces)),
+    string-join(serialize:property-value-pairs($IRIs,$columnInfo,$record,$id,$serialization,$namespaces)),
 
 (: make the backlink only for the instance of the primary class in a table :)
-    if (not($suffix))
+    if ($id="$root")
     then $extraTriple
     else ""
     ,
@@ -244,11 +283,11 @@ declare function serialize:describe-resource($IRIs,$columnInfo,$record,$class,$s
 (:--------------------------------------------------------------------------------------------------:)
 
 (: generate sequence of non-type property/value pair strings :)
-declare function serialize:property-value-pairs($IRIs,$columnInfo,$record,$type,$serialization,$namespaces)
+declare function serialize:property-value-pairs($IRIs,$columnInfo,$record,$id,$serialization,$namespaces)
 {
   (: generates property/value pairs that have fixed values :)
   for $columnType in $columnInfo
-  where "$constant" = $columnType/header/text() and $columnType/class/text() = $type
+  where "$constant" = $columnType/header/text() and $columnType/subject_id/text() = $id
   return switch ($columnType/type/text())
      case "plain" return propvalue:plain-literal($columnType/predicate/text(),$columnType/value/text(),$serialization)
      case "datatype" return propvalue:datatyped-literal($columnType/predicate/text(),$columnType/value/text(),$columnType/attribute/text(),$serialization,$namespaces)
@@ -260,7 +299,7 @@ declare function serialize:property-value-pairs($IRIs,$columnInfo,$record,$type,
   (: generates property/value pairs whose values are given in the metadata table :)
   for $column in $record/child::*, $columnType in $columnInfo
   (: The loop only includes columns containing properties associated with the class of the described resource; that column in the record must not be empty :)
-  where fn:local-name($column) = $columnType/header/text() and $columnType/class/text() = $type and $column//text() != ""
+  where fn:local-name($column) = $columnType/header/text() and $columnType/subject_id/text() = $id and $column//text() != ""
   return switch ($columnType/type/text())
      case "plain" return propvalue:plain-literal($columnType/predicate/text(),$column//text(),$serialization)
      case "datatype" return propvalue:datatyped-literal($columnType/predicate/text(),$column//text(),$columnType/attribute/text(),$serialization,$namespaces)
@@ -279,7 +318,7 @@ declare function serialize:property-value-pairs($IRIs,$columnInfo,$record,$type,
 
   (: generates links to associated resources described in the same document :)
   for $columnType in $columnInfo
-  where "$link" = $columnType/header/text() and $columnType/class/text() = $type
+  where "$link" = $columnType/header/text() and $columnType/subject_id/text() = $id
   let $suffix := $columnType/value/text()
   return 
       for $iri in $IRIs
@@ -311,7 +350,10 @@ declare function serialize:construct-iri($baseIRI,$classes)
      <record>{
      if (fn:substring($suffix,1,2)="_:")
      then (<fullId>{concat("_:",random:uuid() ) }</fullId>, $class/id, $class/class )
-     else (<fullId>{concat($baseIRI,$suffix) }</fullId>, $class/id, $class/class )
+     else 
+       if ($suffix="$root")
+       then (<fullId>{$baseIRI}</fullId>, $class/id, $class/class )
+       else (<fullId>{concat($baseIRI,$suffix) }</fullId>, $class/id, $class/class )
    }</record>
 };
 
