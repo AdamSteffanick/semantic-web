@@ -1,0 +1,7 @@
+header,predicate,type,value,attribute,subject_id
+label,rdfs:label,plain,,,$root
+given,foaf:givenName,plain,,,$root
+surname,foaf:familyName,plain,,,$root
+created,dcterms:created,datatype,,xsd:dateTime,$root
+modified,dcterms:modified,datatype,,xsd:dateTime,$root
+$constant,madsrdf:hasAffiliation,iri,http://www.grid.ac/institutes/grid.152326.1,,$root

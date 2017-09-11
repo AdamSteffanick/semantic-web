@@ -9,6 +9,22 @@ Here's the preliminary data model that we are working with:
 
 ![](IMAG1752.jpg)
 
+## Controlled Vocabularies and SKOS
+
+[PowerPoint from March 13](skos-thesaurus.pptx)
+
+## Running SPARQL queries on the vase dataset and the scene controlled vocabulary; named graphs
+
+[PowerPoint from March 27](named-graphs.pptx)
+
+## Ways to discover data by following your nose, or acquiring metadata about an entire dataset
+
+[PowerPoint from April 3](discovering-data.pptx)
+
+## Building web apps using RDF data
+
+[PowerPoint from April 10](web-apps.pptx)
+
 ## vocabularies
 
 **CIDOC CRM**
